@@ -81,6 +81,9 @@ set(HEADER_FILES
   # ${SRC_ROOT_DIR}/forcefield/experimental/CosseratInternalActuation.inl
   ${SRC_ROOT_DIR}/constraint/CosseratSlidingConstraint.h
   ${SRC_ROOT_DIR}/constraint/CosseratSlidingConstraint.inl
+  ${SRC_ROOT_DIR}/forcefield/PLSInertiaForceField.h
+  ${SRC_ROOT_DIR}/mapping/PLSKinematics.h
+  ${SRC_ROOT_DIR}/mapping/PiecewiseLinearStrainMapping.h
   ${SRC_ROOT_DIR}/mapping/LegendrePolynomialsMapping.h
   ${SRC_ROOT_DIR}/mapping/LegendrePolynomialsMapping.inl
   ${SRC_ROOT_DIR}/constraint/CosseratNeedleSlidingConstraint.h
@@ -115,6 +118,8 @@ set(SOURCE_FILES
     ${SRC_ROOT_DIR}/forcefield/standard/HookeSeratPCSForceField.cpp
     ${SRC_ROOT_DIR}/forcefield/experimental/CosseratInternalActuation.cpp
     ${SRC_ROOT_DIR}/constraint/CosseratSlidingConstraint.cpp
+    ${SRC_ROOT_DIR}/forcefield/PLSInertiaForceField.cpp
+    ${SRC_ROOT_DIR}/mapping/PiecewiseLinearStrainMapping.cpp
     ${SRC_ROOT_DIR}/mapping/LegendrePolynomialsMapping.cpp
     ${SRC_ROOT_DIR}/constraint/CosseratNeedleSlidingConstraint.cpp
     # Lie-group controllers
@@ -247,3 +252,13 @@ endif()
 sofa_install_pythonscripts(PLUGIN_NAME ${PROJECT_NAME} PYTHONSCRIPTS_SOURCE_DIR "examples/python3/")
 
 include(cmake/packaging.cmake)
+
+# PLS contracts can be tested without enabling the entire SOFA test suite.
+option(COSSERAT_BUILD_PLS_TESTS "Build the piecewise linear strain mapping tests" ${COSSERAT_BUILD_TESTS})
+if(COSSERAT_BUILD_PLS_TESTS)
+    sofa_find_package(Sofa.Testing REQUIRED)
+    enable_testing()
+    add_executable(Cosserat_pls_tests tests/unit/PiecewiseLinearStrainMapping_test.cpp)
+    target_link_libraries(Cosserat_pls_tests PRIVATE Cosserat Sofa.Testing)
+    add_test(NAME Cosserat_pls_tests COMMAND Cosserat_pls_tests)
+endif()

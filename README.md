@@ -83,3 +83,7 @@ Follow the tutorial: [Cosserat Tutorial](tutorial/text/cosserat_tutorial.md)
 ## Contributing
 
 We welcome contributions! Please see our contribution guidelines and feel free to open issues or pull requests.
+
+## PLS Extension
+
+The PLS extension adds continuous nodal strains and Vec6 examples for extensible rods. See [usage](docs/PLS.md), [formulation](docs/PLS_FORMULATION.md), and [implementation changes](docs/PLS_CHANGES.md).

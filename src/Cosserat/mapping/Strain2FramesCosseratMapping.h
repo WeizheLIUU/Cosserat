@@ -19,8 +19,10 @@
 
 #include <Cosserat/config.h>
 #include <Cosserat/mapping/CosseratGeometryMapping.h>
+#include <Cosserat/mapping/PLSKinematics.h>
 #include <liegroups/CosseratBodyJacobian.h>
 #include <sofa/helper/ColorMap.h>
+#include <array>
 
 // NOTE (P2 cleanup): the following headers were previously included for
 // SE3Integrator / BezierSE3 / UncertaintyPropagator / GaussianOnManifold /
@@ -104,6 +106,13 @@ namespace Cosserat::mapping {
 		 */
 		[[nodiscard]] sofa::core::State<Out> *getFramesState() const { return this->m_frames; }
 
+        /// PLS-only Cartesian convective acceleration source. Both Gauss mass
+        /// groups share this cache, keyed by actual MechanicalParams data/IDs.
+        const std::vector<pls_detail::TransformJet>* getPLSFrameMotion(
+            const sofa::core::MechanicalParams* params);
+        std::size_t getPLSMotionBuildCount() const { return m_plsMotionBuildCount; }
+
+
 	public:
 		//////////////////////////////////////////////////////////////////////
 		/// @name Data Fields
@@ -116,6 +125,7 @@ namespace Cosserat::mapping {
 		sofa::Data<sofa::type::RGBAColor> d_color;
 		sofa::Data<sofa::type::vector<int>> d_index;
 		sofa::Data<unsigned int> d_baseIndex;
+        sofa::Data<bool> d_plsKinematics; ///< Opt-in PLS path; existing scenes keep their default behavior.
 
 		/// Integration method for the Cosserat ODE  g'(s) = g(s)·hat(ξ(s)).
 		/// 0 = Euler (order 1, equivalent to expCosserat — default for backward compat.)
@@ -170,9 +180,11 @@ namespace Cosserat::mapping {
 					 const sofa::type::vector<const sofa::DataVecDeriv_t<Out> *> &dataVecInForce) override;
 
 		/**
-		 * @brief PARTIAL geometric stiffness contribution (child wrench frozen).
+		 * @brief Native partial geometric stiffness; PLS uses frozen-J consistently.
 		 *
-		 * Accumulates an approximation of ∂/∂ξ [J(ξ)ᵀ f_x] · δξ into the strain
+		 * With plsKinematics=true this is a no-op, matching the absence of a
+		 * geometric Hessian in PLS matrix assembly. The native default path below
+		 * accumulates an approximation of ∂/∂ξ [J(ξ)ᵀ f_x] · δξ into the strain
 		 * force vector, weighted by `kFactor`, with the child wrenches f_x held
 		 * constant at the current configuration.
 		 *
@@ -243,6 +255,15 @@ namespace Cosserat::mapping {
 		//////////////////////////////////////////////////////////////////////////////
 
 		sofa::helper::ColorMap m_colorMap;
+        pls_detail::ConstraintTransposeCache<Deriv1::total_size> m_plsConstraintTranspose;
+        std::size_t m_plsGeometryVersion = 0;
+        std::size_t m_plsConstraintVersion = static_cast<std::size_t>(-1);
+        int m_plsConstraintFramesCounter = -1;
+        std::vector<pls_detail::TransformJet> m_plsMotion;
+        std::array<const sofa::core::objectmodel::BaseData*, 7> m_plsMotionSources {};
+        std::array<int, 7> m_plsMotionCounters {};
+        std::size_t m_plsMotionBuildCount = 0;
+        bool m_plsMotionValid = false;
 
 		/**
 		 * @brief Body Jacobian of the rod — accessor for external consumers.

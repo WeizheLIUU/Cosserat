@@ -7,7 +7,7 @@ import Sofa
 def addEdgeCollision(parentNode: Sofa.Core.Node,
                      position3D: List[List[float]],
                      edges: List[List[int]],
-                     group: str = '2') -> Sofa.Core.Node:
+                     group: str = '2', *, rigidState=None) -> Sofa.Core.Node:
     """
     Add edge-based collision model to a parent node.
 
@@ -19,6 +19,7 @@ def addEdgeCollision(parentNode: Sofa.Core.Node,
         position3D: List of 3D positions for collision vertices
         edges: List of edge indices connecting vertices
         group: Collision group identifier (default: '2')
+        rigidState: Optional rigid-frame state, with one frame per collision point.
 
     Returns:
         The created collision node
@@ -47,15 +48,20 @@ def addEdgeCollision(parentNode: Sofa.Core.Node,
                                       edges=edges)
     collisInstrumentCombined.addObject('EdgeSetTopologyModifier',
                                       name="collisEdgeModifier")
-    collisInstrumentCombined.addObject('MechanicalObject',
-                                      name="CollisionDOFs")
+    state = collisInstrumentCombined.addObject('MechanicalObject',
+                                               name="CollisionDOFs")
     collisInstrumentCombined.addObject('LineCollisionModel',
                                       bothSide="1",
                                       group=group)
     collisInstrumentCombined.addObject('PointCollisionModel',
                                       group=group)
-    collisInstrumentCombined.addObject('IdentityMapping',
-                                      name="mapping")
+    if rigidState is None:
+        collisInstrumentCombined.addObject('IdentityMapping', name="mapping")
+    else:
+        state.position = [[0.0, 0.0, 0.0] for _ in position3D]
+        collisInstrumentCombined.addObject('RigidMapping', name="mapping",
+            input=rigidState.getLinkPath(), output=state.getLinkPath(),
+            rigidIndexPerPoint=list(range(len(position3D))), globalToLocalCoords=False)
     return collisInstrumentCombined
 
 
@@ -63,9 +69,11 @@ def addPointsCollision(parentNode: Sofa.Core.Node,
                       position3D: List[List[float]],
                       edges: List[List[int]],
                       nodeName: str,
-                      group: str = '2') -> Sofa.Core.Node:
+                      group: str = '2', *, rigidState=None, radius=None) -> Sofa.Core.Node:
     """
     Add point-based collision model to a parent node.
+
+    An optional radius selects finite-radius spheres instead of point primitives.
 
     This function creates a child node with point collision models, which is
     especially useful for detecting interactions at beam endpoints or specific points.
@@ -76,6 +84,7 @@ def addPointsCollision(parentNode: Sofa.Core.Node,
         edges: List of edge indices connecting vertices
         nodeName: Name for the created collision node
         group: Collision group identifier (default: '2')
+        rigidState: Optional rigid-frame state, with one frame per collision point.
 
     Returns:
         The created collision node
@@ -107,16 +116,22 @@ def addPointsCollision(parentNode: Sofa.Core.Node,
                                       edges=edges)
     collisInstrumentCombined.addObject('EdgeSetTopologyModifier',
                                       name="beamModifier")
-    collisInstrumentCombined.addObject('MechanicalObject',
+    state = collisInstrumentCombined.addObject('MechanicalObject',
                                       name="collisionStats",
                                       showObject=False,
                                       showIndices=False)
-    collisInstrumentCombined.addObject('PointCollisionModel',
-                                      name="beamColMod",
-                                      group=group)
-    # Using RigidMapping instead of IdentityMapping for better performance with rigid bodies
-    collisInstrumentCombined.addObject('RigidMapping',
-                                      name="beamMapping")
+    if radius is None:
+        collisInstrumentCombined.addObject('PointCollisionModel', name="beamColMod", group=group)
+    else:
+        collisInstrumentCombined.addObject('SphereCollisionModel', name="beamColMod",
+                                           radius=radius, group=group, selfCollision=False)
+    if rigidState is None:
+        collisInstrumentCombined.addObject('RigidMapping', name="beamMapping")
+    else:
+        state.position = [[0.0, 0.0, 0.0] for _ in position3D]
+        collisInstrumentCombined.addObject('RigidMapping', name="beamMapping",
+            input=rigidState.getLinkPath(), output=state.getLinkPath(),
+            rigidIndexPerPoint=list(range(len(position3D))), globalToLocalCoords=False)
     return collisInstrumentCombined
 
 

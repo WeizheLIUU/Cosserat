@@ -57,6 +57,8 @@ extern void registerStaggeredCosseratMapping(sofa::core::ObjectFactory *factory)
 extern void registerPainlessBeamForceField(sofa::core::ObjectFactory *factory);
 
 // extern void registerDiscretDynamicCosseratMapping(sofa::core::ObjectFactory *factory);
+extern void registerPLSInertiaForceField(sofa::core::ObjectFactory *factory);
+extern void registerPiecewiseLinearStrainMapping(sofa::core::ObjectFactory *factory);
 extern void registerLegendrePolynomialsMapping(sofa::core::ObjectFactory *factory);
 extern void registerRigidDistanceMapping(sofa::core::ObjectFactory *factory);
 
@@ -116,6 +118,8 @@ void registerObjects(sofa::core::ObjectFactory *factory) {
     registerStaggeredCosseratMapping(factory);
     registerPainlessBeamForceField(factory);
     // registerDiscretDynamicCosseratMapping(factory);
+    registerPiecewiseLinearStrainMapping(factory);
+    registerPLSInertiaForceField(factory);
     registerLegendrePolynomialsMapping(factory);
     registerRigidDistanceMapping(factory);
     controller::registerCosseratILQRController(factory);

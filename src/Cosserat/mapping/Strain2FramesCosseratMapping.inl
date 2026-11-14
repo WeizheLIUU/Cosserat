@@ -18,6 +18,7 @@
 #pragma once
 
 #include <Cosserat/mapping/Strain2FramesCosseratMapping.h>
+#include <Cosserat/mapping/PLSKinematics.h>
 #include <Cosserat/mapping/SofaLieGroupsUtils.h>
 #include <sofa/core/MechanicalParams.h>
 #include <sofa/core/Multi2Mapping.inl>
@@ -29,6 +30,7 @@
 #include <sofa/helper/visual/DrawTool.h>
 #include <sofa/type/Quat.h>
 
+#include <algorithm>
 #include <cassert>
 #include <map>
 #include <string>
@@ -62,6 +64,8 @@ namespace Cosserat::mapping {
 							 "base of Cosserat models, 0 by default this can"
 							 "take another value if the rigid base is given "
 							 "by another body.")),
+        d_plsKinematics(initData(&d_plsKinematics, false, "plsKinematics",
+            "Enable consistent kinematics and rendering for the nodal PLS scene.")),
 		d_integrationMethod(initData(&d_integrationMethod, 0, "integrationMethod",
 							 "Integration method for the Cosserat ODE g'(s)=g(s)·hat(ξ(s)).\n"
 							 "0 = Euler (order 1, identical to expCosserat — default)\n"
@@ -141,7 +145,8 @@ namespace Cosserat::mapping {
 													  const vector<const sofa::DataVecCoord_t<In2> *> &dataVecIn2Pos) {
 
 
-		msg_info("Strain2FramesCosseratMapping") << "Strain2FramesCosseratMapping::apply called";
+		msg_info_when(!d_plsKinematics.getValue() || this->f_printLog.getValue(),
+            "Strain2FramesCosseratMapping") << "Strain2FramesCosseratMapping::apply called";
 
 		if (dataVecOutPos.empty() || dataVecIn1Pos.empty() || dataVecIn2Pos.empty())
 			return;
@@ -185,6 +190,16 @@ namespace Cosserat::mapping {
 		// Cache the printLog value out of the loop
 		bool doPrintLog = this->f_printLog.getValue();
 
+        // The PLS scene has many dependent quadrature frames. Reuse the
+        // prefix products instead of recomposing from the base for each one.
+        std::vector<SE3Types> plsPrefixes;
+        if (d_plsKinematics.getValue())
+        {
+            plsPrefixes.reserve(m_section_properties.size() + 1);
+            plsPrefixes.push_back(base_frame);
+            for (const auto& section : m_section_properties)
+                plsPrefixes.push_back(plsPrefixes.back() * section.getTransformation());
+        }
 		// Apply transformations to compute output frames
 		for (unsigned int i = 0; i < frame_count; i++) {
 			// Bounds checking
@@ -198,12 +213,19 @@ namespace Cosserat::mapping {
 			const auto related_beam_idx = m_frame_properties[i].getRelatedSectionIndex();
 			assert(related_beam_idx <= m_section_properties.size() && "Invalid beam index");
 
+            if (d_plsKinematics.getValue())
+            {
+                current_frame = plsPrefixes[related_beam_idx];
+            }
+            else
+            {
 			for (unsigned int j = 0; j < related_beam_idx; j++) {
 				assert(j < m_section_properties.size() && "Section index out of bounds");
 				// Compose with section transformation
 				//// frame = gX(L_0)*...*gX(L_{n-1})
 				current_frame = current_frame * m_section_properties[j].getTransformation();
 			}
+            }
 
 			// Apply additional frame transformation
 			// frame*gX(x)
@@ -249,7 +271,9 @@ namespace Cosserat::mapping {
 	template<class TIn1, class TIn2, class TOut>
 	void Strain2FramesCosseratMapping<TIn1, TIn2, TOut>::updateFrameTransformations(
 			const sofa::type::vector<Coord1> &vec_of_strains) {
-		auto nb_node = vec_of_strains.size();
+		++m_plsGeometryVersion;
+        m_plsMotionValid = false;
+        auto nb_node = vec_of_strains.size();
 
 		// Update node properties with current strain values
 		// std::cout<<"[Loop]: Update node properties with current strain values"<<std::endl;
@@ -276,9 +300,26 @@ namespace Cosserat::mapping {
 			// SE3Types _gx = computeSE3Exponential(m_section_properties[i+1].getLength(),
 
 			auto section_length = m_section_properties[i + 1].getLength();
-			SE3Types _gx = SE3Types::expCosserat(strain, section_length);
+			SE3Types _gx = d_plsKinematics.getValue()
+                ? pls_detail::exponential(strain, section_length)
+                : SE3Types::expCosserat(strain, section_length);
 			m_section_properties[i + 1].setTransformation(_gx);
 		}
+
+        if (d_plsKinematics.getValue())
+        {
+            // Output frames may skip several integration intervals. Locate
+            // each frame independently, then reuse the native metadata helper.
+            const auto& sections = d_curv_abs_section.getValue();
+            const auto& frames = d_curv_abs_frames.getValue();
+            this->reserveContainers(frames.size());
+            for (std::size_t i = 0; i < frames.size(); ++i)
+            {
+                const auto upper = std::lower_bound(sections.begin() + 1, sections.end(), frames[i]);
+                const auto index = std::min<std::size_t>(upper - sections.begin(), sections.size() - 1);
+                this->updateFrameData(i, index, frames[i], sections);
+            }
+        }
 
 		// Update frame properties based on their position within sections
 		for (size_t i = 0; i < m_frame_properties.size(); ++i) {
@@ -286,8 +327,11 @@ namespace Cosserat::mapping {
 				int sectionIndex = m_frame_properties[i].getRelatedSectionIndex();
 				if (sectionIndex >= 0 && sectionIndex < static_cast<int>(vec_of_strains.size() + 1)) {
 					// Compute frame transformation at its specific position
-					SE3Types frame_gx = SE3Types::expCosserat(m_section_properties[sectionIndex].getStrainsVec(),
-															  m_frame_properties[i].getDistanceToSectionStart());
+					SE3Types frame_gx = d_plsKinematics.getValue()
+                        ? pls_detail::exponential(m_section_properties[sectionIndex].getStrainsVec(),
+                            m_frame_properties[i].getDistanceToSectionStart())
+                        : SE3Types::expCosserat(m_section_properties[sectionIndex].getStrainsVec(),
+                            m_frame_properties[i].getDistanceToSectionStart());
 					m_frame_properties[i].setTransformation(frame_gx);
 				}
 			}
@@ -333,7 +377,14 @@ namespace Cosserat::mapping {
 		}
 
 		// 1. Compute current tangent exponential SE3 matrices
-		this->updateTangExpSE3();
+		if (d_plsKinematics.getValue())
+        {
+            pls_detail::updateTangents(m_section_properties, m_frame_properties);
+        }
+        else
+        {
+            this->updateTangExpSE3();
+        }
 
 		// 2. Compute the base velocity in SE(3) tangent space
 		// 2.1 Convert base velocity to se(3) tangent vector
@@ -541,7 +592,7 @@ namespace Cosserat::mapping {
 			Eigen::Matrix<double, N, 1>  f = matB_trans * temp * currentLocalForce;
 
 			// Handle section change - propagate accumulated force
-			if (lastSectionIndex != currentSectionIndex) {
+			while (lastSectionIndex != currentSectionIndex) {
 				lastSectionIndex--;
 				// Transform accumulated force to new section reference
 				
@@ -558,6 +609,9 @@ namespace Cosserat::mapping {
 				for (int j=0; j<N; j++){
 					strainForces[lastSectionIndex-1][j] +=temp_f[j];
 				}
+                // Preserve the native single-section path when PLS is disabled.
+                if (!d_plsKinematics.getValue())
+                    break;
 				
 			}
 
@@ -601,6 +655,28 @@ namespace Cosserat::mapping {
 
 		if (this->d_componentState.getValue() != sofa::core::objectmodel::ComponentState::Valid)
 			return;
+
+        if (d_plsKinematics.getValue())
+        {
+            const auto* positionsData = this->m_frames->read(sofa::core::vec_id::read_access::position);
+            const auto& positions = positionsData->getValue();
+            if (m_plsConstraintVersion != m_plsGeometryVersion
+                || m_plsConstraintFramesCounter != positionsData->getCounter())
+            {
+                pls_detail::updateTangents(m_section_properties, m_frame_properties);
+                m_plsConstraintTranspose.update(m_section_properties, m_frame_properties,
+                                                positions, m_frame_to_section_indices);
+                m_plsConstraintVersion = m_plsGeometryVersion;
+                m_plsConstraintFramesCounter = positionsData->getCounter();
+            }
+            auto& out1 = *dataMatOut1Const[0]->beginEdit();
+            auto& out2 = *dataMatOut2Const[0]->beginEdit();
+            m_plsConstraintTranspose.apply(dataMatInConst[0]->getValue(), out1, out2,
+                                           d_baseIndex.getValue());
+            dataMatOut1Const[0]->endEdit();
+            dataMatOut2Const[0]->endEdit();
+            return;
+        }
 
 		if (d_debug.getValue())
 			std::cout << " ########## Strain2FramesCosseratMapping ApplyJT Constraint Function ########" << std::endl;
@@ -739,8 +815,85 @@ namespace Cosserat::mapping {
 	}
 
 
+    template<class TIn1, class TIn2, class TOut>
+    const std::vector<pls_detail::TransformJet>*
+    Strain2FramesCosseratMapping<TIn1, TIn2, TOut>::getPLSFrameMotion(
+        const sofa::core::MechanicalParams* params)
+    {
+        if (!params || !d_plsKinematics.getValue() || !m_strain_state || !m_rigid_base)
+            return nullptr;
+        const auto* q = params->readX(m_strain_state);
+        const auto* v = params->readV(m_strain_state);
+        const auto* base = params->readX(m_rigid_base);
+        const auto* baseV = params->readV(m_rigid_base);
+        const std::array<const sofa::core::objectmodel::BaseData*, 7> sources
+            {q, v, base, baseV, &d_curv_abs_section, &d_curv_abs_frames, &d_baseIndex};
+        std::array<int, 7> counters;
+        for (std::size_t i = 0; i < sources.size(); ++i)
+        {
+            if (!sources[i])
+                return nullptr;
+            sources[i]->updateIfDirty();
+            counters[i] = sources[i]->getCounter();
+        }
+        if (!m_plsMotionValid || sources != m_plsMotionSources || counters != m_plsMotionCounters)
+        {
+            const auto index = d_baseIndex.getValue();
+            if (index >= base->getValue().size() || index >= baseV->getValue().size())
+                return nullptr;
+            bool stationary = true;
+            for (const auto& rate : v->getValue())
+                for (unsigned int c = 0; c < rate.size(); ++c)
+                    stationary = stationary && rate[c] == 0.0;
+            for (unsigned int c = 0; c < baseV->getValue()[index].size(); ++c)
+                stationary = stationary && baseV->getValue()[index][c] == 0.0;
+            if (stationary)
+            {
+                // Exactly zero convective acceleration: reuse the already
+                // evaluated frame poses and skip all exponential derivatives.
+                const auto& poses = params->readX(m_frames)->getValue();
+                m_plsMotion.assign(poses.size(), pls_detail::TransformJet{});
+                for (std::size_t f = 0; f < poses.size(); ++f)
+                {
+                    const auto pose = rigidCoordToSE3(poses[f]);
+                    m_plsMotion[f].value.template topLeftCorner<3, 3>() = pose.rotation().matrix();
+                    m_plsMotion[f].value.template topRightCorner<3, 1>() = pose.translation();
+                }
+                m_plsMotionValid = q->getValue().size() == v->getValue().size()
+                    && m_section_properties.size() == q->getValue().size() + 1
+                    && poses.size() == m_frame_properties.size();
+            }
+            else
+            {
+                m_plsMotionValid = pls_detail::frameMotionJets(q->getValue(), v->getValue(),
+                    base->getValue()[index], baseV->getValue()[index], m_section_properties,
+                    m_frame_properties, m_plsMotion);
+            }
+            if (!m_plsMotionValid)
+                return nullptr;
+            m_plsMotionSources = sources;
+            m_plsMotionCounters = counters;
+            ++m_plsMotionBuildCount;
+        }
+        return &m_plsMotion;
+    }
+
 	template<class TIn1, class TIn2, class TOut>
 	void Strain2FramesCosseratMapping<TIn1, TIn2, TOut>::draw(const sofa::core::visual::VisualParams *vparams) {
+        if (d_plsKinematics.getValue())
+        {
+            if (this->m_frames && this->m_strain_state)
+            {
+                pls_detail::drawFrames(vparams,
+                    this->m_frames->read(sofa::core::vec_id::read_access::position)->getValue(),
+                    this->m_strain_state->read(sofa::core::vec_id::read_access::position)->getValue(),
+                    m_frame_to_section_indices, d_radius.getValue(), d_color.getValue(),
+                    d_deformationAxis.getValue(), d_drawMapBeam.getValue(),
+                    m_colorMap.getEvaluator(d_min.getValue(), d_max.getValue()));
+            }
+            return;
+        }
+
 		if (!vparams->displayFlags().getShowMechanicalMappings())
 			return;
 
@@ -859,6 +1012,15 @@ namespace Cosserat::mapping {
 			sofa::core::MultiVecDerivId          inForce,
 			sofa::core::ConstMultiVecDerivId     /*outForce*/) {
 
+        // PLS matrix assembly uses a frozen mapping Jacobian: this mapping
+        // does not assemble a geometric Hessian. The native implementation
+        // below contains only one incomplete derivative term. Evaluating it
+        // in MBK*v (notably global stiffness-Rayleigh damping) while omitting
+        // it from the matrix creates an inconsistent, potentially active term.
+        // Use the same frozen-J approximation on both sides for PLS only.
+        if (d_plsKinematics.getValue())
+            return;
+
 		if (this->d_componentState.getValue() != sofa::core::objectmodel::ComponentState::Valid)
 			return;
 
@@ -879,7 +1041,14 @@ namespace Cosserat::mapping {
 
 		// Refresh tangent-exp matrices (applyJ already does this each step; guard
 		// against a standalone applyDJT call).
-		this->updateTangExpSE3();
+		if (d_plsKinematics.getValue())
+        {
+            pls_detail::updateTangents(m_section_properties, m_frame_properties);
+        }
+        else
+        {
+            this->updateTangExpSE3();
+        }
 
 		const auto sz = m_frame_to_section_indices.size();
 		if (sz == 0) {
